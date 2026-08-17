@@ -1,0 +1,55 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Publishing is not idempotent — npm rejects a version that already exists —
+# so runs must never overlap.
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      # Required for npm Trusted Publishing: the job mints a short-lived OIDC
+      # token per run instead of carrying a long-lived NPM_TOKEN secret.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # OIDC publishing landed in npm 11.5.1; the npm bundled with Node 22 is
+      # older than that.
+      - run: npm install -g npm@latest
+
+      - name: Check the tag matches package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag $TAG does not match package.json version $PKG"
+            exit 1
+          fi
+
+      - name: Smoke test the CLI
+        run: |
+          node src/cli.js --version
+          node src/cli.js find memory --limit 1 --json > /tmp/out.json
+          node -e "const r=require('/tmp/out.json'); if(!r.ok||!r.results.length) throw new Error('catalogue returned nothing')"
+
+      # No NODE_AUTH_TOKEN: the trusted publisher on npmjs.com authorises this
+      # exact repository and workflow file, and npm attaches build provenance
+      # automatically.
+      - run: npm publish --access public

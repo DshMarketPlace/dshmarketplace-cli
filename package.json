@@ -1,0 +1,40 @@
+{
+  "name": "dshmarketplace-cli",
+  "version": "0.1.4",
+  "description": "Find and install DeepSeek Harness (DSH) plugins from the CLI or from a coding agent. Machine-readable --json output.",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "plugins",
+    "cli",
+    "marketplace",
+    "agent-skill",
+    "ai-agent",
+    "mcp"
+  ],
+  "homepage": "https://dshmarketplace.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DshMarketPlace/dshmarketplace-cli.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dshmarketplace": "./src/cli.js",
+    "dshm-cli": "./src/cli.js"
+  },
+  "files": [
+    "src",
+    "SKILL.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bugs": {
+    "url": "https://github.com/DshMarketPlace/dshmarketplace-cli/issues"
+  }
+}
