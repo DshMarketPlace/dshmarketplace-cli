@@ -1,6 +1,6 @@
 {
   "name": "dshmarketplace-cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Find and install DeepSeek Harness (DSH) plugins from the CLI or from a coding agent. Machine-readable --json output.",
   "keywords": [
     "deepseek",

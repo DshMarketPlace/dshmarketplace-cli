@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 import { styleText } from "node:util";
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 
 // One canonical endpoint. DSHM_API covers anyone who needs to point the CLI
 // somewhere else — a mirror, a staging deployment, or a local catalogue.
