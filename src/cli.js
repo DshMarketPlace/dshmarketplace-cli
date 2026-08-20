@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { styleText } from "node:util";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 // One canonical endpoint. DSHM_API covers anyone who needs to point the CLI
 // somewhere else — a mirror, a staging deployment, or a local catalogue.
@@ -315,6 +315,66 @@ async function resolveOne(name, options) {
   return { query: name, plugin: p, target };
 }
 
+/**
+ * Curated sets. The catalogue serves them with the date and verdict of the
+ * sandbox run that installed the whole combination at once — a preset is a
+ * claim about plugins together, and combinations fail where the parts do not.
+ */
+async function preset(id, options) {
+  const data = await api("/api/v1/presets");
+
+  if (!id) {
+    if (options.json) return emitJson("preset", data);
+    console.log(`\n${c.bold("Curated sets")}\n`);
+    for (const p of data.presets) {
+      console.log(`  ${c.bold(p.id.padEnd(12))} ${p.name.en}`);
+      console.log(`  ${" ".repeat(12)} ${c.dim(truncate(p.blurb.en, 78))}`);
+      console.log(
+        `  ${" ".repeat(12)} ${c.dim(`${plural(p.plugins.length, "plugin", "plugins")} · verified ${p.verified.at} · ${p.verified.verdict}`)}\n`,
+      );
+    }
+    console.log(c.dim("Install one with: npx dshmarketplace-cli preset <id>\n"));
+    return;
+  }
+
+  const chosen = data.presets.find((p) => p.id === id);
+  if (!chosen) {
+    console.error(
+      c.red(`No preset called '${id}'.`) +
+        c.dim(`\nAvailable: ${data.presets.map((p) => p.id).join(", ")}\n`),
+    );
+    process.exit(1);
+  }
+
+  // Nothing but JSON on stdout when an agent asked for JSON — `add` emits the
+  // envelope below, and a human-readable header printed first would make the
+  // documented contract unparseable.
+  if (!options.json) {
+    console.log(`\n${c.bold(chosen.name.en)}  ${c.dim(`(${chosen.id})`)}`);
+    console.log(c.dim(chosen.blurb.en));
+  }
+  // Stated up front rather than buried. The whole reason to trust a preset is
+  // that the combination was run, so the date and the verdict travel with it.
+  if (!options.json) {
+    console.log(
+      c.dim(
+        `\nVerified ${chosen.verified.at} — ${chosen.verified.verdict}, ` +
+          `dsh ${chosen.verified.dsh}, pnpm ${chosen.verified.pnpm}`,
+      ),
+    );
+  }
+
+  // Hand the targets to the same path a manual `add` takes, so a preset gets
+  // profile detection, the sandbox pre-flight and the build-script allowlist
+  // for free — and cannot drift from what `add` does. The endpoint returns a
+  // record per member, not a bare string, because the page needs the summary
+  // and the star count; `add` wants the install target out of it.
+  return add(
+    chosen.plugins.map((m) => (typeof m === "string" ? m : m.target)),
+    options,
+  );
+}
+
 async function add(names, options) {
   if (!names.length) {
     console.error("Usage: npx dshmarketplace-cli add <owner/repo> [more...]");
@@ -439,6 +499,8 @@ ${c.bold("Usage")}
   npx dshmarketplace-cli find <query>        Search the catalogue
   npx dshmarketplace-cli info <owner/repo>   Show one plugin in detail
   npx dshmarketplace-cli add <name...>       Install one or more into DSH
+  npx dshmarketplace-cli preset              List the curated sets
+  npx dshmarketplace-cli preset <id>         Install a whole set
 
 ${c.bold("Options")}
   --json             Machine-readable output (stable schema)
@@ -520,6 +582,9 @@ async function main() {
     case "add":
     case "install":
       return add(rest, options);
+    case "preset":
+    case "presets":
+      return preset(rest[0], options);
     default:
       console.error(`Unknown command: ${command}`);
       console.log(HELP);

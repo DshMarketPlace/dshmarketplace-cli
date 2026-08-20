@@ -92,6 +92,24 @@ npx dshmarketplace-cli add some/plugin --dry-run --json
 | `--dry-run` | 只打印命令，不执行（`add`） |
 | `--json` | 机器可读输出，结构稳定（所有命令） |
 
+### `preset [id]`
+
+挑好的组合。不带 id 就列出来，带 id 就把整套装上。
+
+```bash
+npx dshmarketplace-cli preset
+npx dshmarketplace-cli preset essentials
+```
+
+「一套」和「一个」不是同一个结论。目录里每条记录的结论，来自把*那一个插件*装进空
+profile；而一套预设必须扛得住成员**一起装**，这会在零件不会失败的地方失败 —— 两个插件
+要同一个 peer 的不兼容版本、某个 build script 只有在别的插件把宿主包拖进来之后才被拦、
+cordis 拒绝重复的 loader entry id 于是插件装上了、报成功了、然后从来没被注册。
+
+所以每套都带着那次沙箱运行的日期、结论，以及当时的 `dsh` 和 `pnpm` 版本，CLI 在动手之前
+先把这些打出来。装预设走的是跟 `add` 同一条路，所以 profile 识别、装前拦截、build script
+放行它全都有。
+
 ## 给 coding agent 用
 
 所有命令都支持 `--json`，输出 `{ ok, command, version, ... }`。「只解析不执行」

@@ -101,6 +101,28 @@ prints the edit instead of making it.
 | `--dry-run` | Print the command without running it (`add`) |
 | `--json` | Machine-readable output, stable schema (all commands) |
 
+### `preset [id]`
+
+Curated sets. With no id, lists them; with one, installs the whole set.
+
+```bash
+npx dshmarketplace-cli preset
+npx dshmarketplace-cli preset essentials
+```
+
+A set is a different claim from a listing. Each listing's verdict comes from
+installing *that plugin* into an empty profile; a set has to survive its members
+being installed **together**, which fails in ways the parts do not — incompatible
+peers, a build script blocked only once another plugin drags in its owner, and
+cordis refusing a duplicate loader entry id so a plugin installs, reports
+success and is never registered.
+
+So every set carries the date, verdict and the `dsh` and `pnpm` versions of the
+sandbox run that installed the whole list as one command, and the CLI prints
+them before it touches anything. Installing a preset goes through the same path
+as `add`, so it inherits profile detection, the pre-flight and the build-script
+allowlist.
+
 ## Requirements
 
 Node 18 or newer, and DeepSeek Harness on your PATH:
