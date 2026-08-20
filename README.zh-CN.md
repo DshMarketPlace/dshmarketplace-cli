@@ -55,22 +55,40 @@ npx dshmarketplace-cli find terminal --category ui
 npx dshmarketplace-cli info Anionex/dsh-vision-toolkit
 ```
 
-### `add <owner/repo>`
+### `add <name...>`
 
-解析插件并通过 `dsh` 执行安装。
+解析每个插件，然后走 `dsh` 执行一次安装。仓库名、npm 包名、混着写都行。
 
 ```bash
 npx dshmarketplace-cli add NanmiCoder/dsh-agent-teams
-npx dshmarketplace-cli add liustack/modlens --dry-run
-npx dshmarketplace-cli add some/plugin --profile tui
+npx dshmarketplace-cli add dsh-context dsh-mnemon @liustack/modsearch
+npx dshmarketplace-cli add some/plugin --dry-run --json
 ```
+
+多个插件会合成**一条** `dsh plugin add a b c`，pnpm 一次性解析完，不是一个一个装。
+
+有三件事是你自己粘命令做不到的。
+
+**profile 是从磁盘上读出来的。** 目录里发的每条命令都写 `--profile web`，因为默认装出来
+就叫这个。但如果你的 profile 叫 `tui`，那条命令会执行成功、然后什么都不出现。这里会去读
+`$DSH_HOME/profiles`，并且告诉你它选了哪个。
+
+**沙箱里装不上的插件会被提前剔掉**，在碰你机器之前。只有 `failed` 和 `timeout` 算——
+`needs-approval` 和 `not-a-layer` 都是装上了的。`--force` 可以强来。
+
+**被拦下的 build script 会自动放行并重装。** pnpm 会拒绝执行依赖的 build script，直到它被
+写进 profile 的 `onlyBuiltDependencies`；在那之前 harness 可能根本不会注册这个插件——装是
+装了，但它是死的。CLI 会读 pnpm 实际跳过了哪些，写进 profile 的 `pnpm-workspace.yaml`，
+然后重装一次。`--no-approve` 则只把该改的地方打印出来，不动手。
 
 | 选项 | 作用 |
 | --- | --- |
 | `--limit <n>` | 显示多少条（`find`，默认 10） |
 | `--category <id>` | 按分类过滤（`find`） |
 | `--source github` | 强制用 GitHub 源而不是 npm（`add`） |
-| `--profile <name>` | 装进哪个 DSH profile（`add`，默认 `web`） |
+| `--profile <name>` | 装进哪个 DSH profile（`add`，默认自动识别） |
+| `--no-approve` | 只报告被拦的 build script，不自动放行 |
+| `--force` | 沙箱记录为失败也照装 |
 | `--dry-run` | 只打印命令，不执行（`add`） |
 | `--json` | 机器可读输出，结构稳定（所有命令） |
 

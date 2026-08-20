@@ -58,22 +58,46 @@ route for one plugin.
 npx dshmarketplace-cli info Anionex/dsh-vision-toolkit
 ```
 
-### `add <owner/repo>`
+### `add <name...>`
 
-Resolves the plugin and runs the install through `dsh`.
+Resolves each plugin and runs one install through `dsh`. Accepts a repository
+name, an npm package name, or a mixture.
 
 ```bash
 npx dshmarketplace-cli add NanmiCoder/dsh-agent-teams
-npx dshmarketplace-cli add zhu1090093659/dsh-web-ui --dry-run
-npx dshmarketplace-cli add some/plugin --source github
+npx dshmarketplace-cli add dsh-context dsh-mnemon @liustack/modsearch
+npx dshmarketplace-cli add some/plugin --dry-run --json
 ```
+
+Several plugins go into a **single** `dsh plugin add a b c`, so pnpm resolves
+them together instead of once per plugin.
+
+Three things happen that pasting the command yourself does not do.
+
+**The profile is read off disk.** Every command the catalogue publishes says
+`--profile web`, because that is what a default install creates. On a machine
+whose profile is `tui`, that command succeeds and nothing appears. This reads
+`$DSH_HOME/profiles` and says which one it picked.
+
+**A plugin the sandbox could not install is dropped** before your machine is
+touched. Only `failed` and `timeout` count — `needs-approval` and
+`not-a-layer` both installed. `--force` overrides it.
+
+**A blocked build script is allowlisted and rebuilt.** pnpm refuses to run a
+dependency's build script until it is named in the profile's
+`onlyBuiltDependencies`, and until then the harness may never register the
+plugin — installed, and inert. The CLI reads what pnpm actually skipped, writes
+it into the profile's `pnpm-workspace.yaml` and reinstalls. `--no-approve`
+prints the edit instead of making it.
 
 | Option | Effect |
 | --- | --- |
 | `--limit <n>` | Results to show (`find`, default 10) |
 | `--category <id>` | Filter by category (`find`) |
 | `--source github` | Force the GitHub source over npm (`add`) |
-| `--profile <name>` | DSH profile to install into (`add`, default `web`) |
+| `--profile <name>` | DSH profile to install into (`add`, default: detected) |
+| `--no-approve` | Report blocked build scripts instead of allowlisting them |
+| `--force` | Install even where the sandbox recorded a failure |
 | `--dry-run` | Print the command without running it (`add`) |
 | `--json` | Machine-readable output, stable schema (all commands) |
 

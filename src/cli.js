@@ -7,9 +7,12 @@
  * user has installed anything.
  */
 import { spawn } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { styleText } from "node:util";
 
-const VERSION = "0.1.5";
+const VERSION = "0.2.0";
 
 // One canonical endpoint. DSHM_API covers anyone who needs to point the CLI
 // somewhere else — a mirror, a staging deployment, or a local catalogue.
@@ -171,91 +174,262 @@ async function info(name, options = {}) {
   console.log(`\n${c.dim(p.url)}\n`);
 }
 
-async function add(name, options) {
-  const data = await api(`/api/v1/plugins?q=${encodeURIComponent(name)}&limit=5`);
-  const p = data.results.find((r) => r.fullName === name) ?? data.results[0];
+/**
+ * The harness keeps its profiles under $DSH_HOME/profiles/<name>. The catalogue
+ * writes every command against `web` because that is what a default install
+ * creates, but anyone running `tui` or `headless` would otherwise paste a
+ * command that installs into a profile they never boot — it succeeds, and
+ * nothing appears. Read the disk instead of assuming.
+ */
+function dshHome() {
+  return process.env.DSH_HOME ?? join(homedir(), ".dsh");
+}
 
-  if (!p) {
-    if (options.json) {
-      process.stdout.write(
-        `${JSON.stringify({ ok: false, command: "add", error: "not_found", query: name })}\n`,
-      );
-      process.exit(1);
-    }
-    console.error(`Not found in the catalogue: ${name}`);
-    console.error(c.dim("Search first:  npx dshmarketplace-cli find <query>"));
-    process.exit(1);
+function detectProfiles() {
+  try {
+    return readdirSync(join(dshHome(), "profiles"), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return [];
   }
+}
+
+function resolveProfile(explicit) {
+  if (explicit) return { profile: explicit, note: null };
+  const found = detectProfiles();
+  if (!found.length || found.includes("web")) return { profile: "web", note: null };
+  if (found.length === 1) {
+    return { profile: found[0], note: `No 'web' profile here — using '${found[0]}'.` };
+  }
+  return {
+    profile: found[0],
+    note: `Profiles here: ${found.join(", ")}. Using '${found[0]}' — override with --profile.`,
+  };
+}
+
+/**
+ * pnpm refuses to run a dependency's build script until it is allowlisted, and
+ * says which one it skipped. That single line is the whole content of our
+ * `needs-approval` verdict, and it is recoverable: the profile's
+ * pnpm-workspace.yaml takes an `onlyBuiltDependencies` list, and a reinstall
+ * then builds it. Parsing pnpm rather than trusting the catalogue is
+ * deliberate — this is about the machine in front of us, and it is the same
+ * reason the sandbox reads the profile manifest instead of the exit code.
+ */
+function parseBlockedBuilds(output) {
+  return [
+    ...new Set(
+      [...output.matchAll(/Ignored build scripts:\s*([^\n]+)/g)]
+        .flatMap((m) => m[1].split(","))
+        .map((s) => s.trim().replace(/\.$/, "").replace(/@[^@]*$/, ""))
+        .filter(Boolean),
+    ),
+  ];
+}
+
+/**
+ * Appends to the profile's existing `onlyBuiltDependencies` block, or adds one.
+ * Hand-rolled because this package carries no dependencies and a YAML parser
+ * would be the largest thing in it — the file is machine-written and shaped
+ * like the two cases handled here. Anything unexpected returns false and the
+ * caller prints the edit for the user to make, rather than guessing at it.
+ */
+function allowBuilds(profileDir, packages) {
+  const file = join(profileDir, "pnpm-workspace.yaml");
+  if (!existsSync(file)) return false;
+
+  const text = readFileSync(file, "utf8");
+  const already = new Set(
+    [...text.matchAll(/^\s*-\s*(\S+)\s*$/gm)].map((m) => m[1]),
+  );
+  const missing = packages.filter((p) => !already.has(p));
+  if (!missing.length) return true;
+
+  const lines = missing.map((p) => `  - ${p}`).join("\n");
+
+  if (/^onlyBuiltDependencies:/m.test(text)) {
+    writeFileSync(
+      file,
+      text.replace(/^onlyBuiltDependencies:.*$/m, (m) => `${m}\n${lines}`),
+      "utf8",
+    );
+  } else {
+    writeFileSync(file, `${text.replace(/\n*$/, "")}\n\nonlyBuiltDependencies:\n${lines}\n`, "utf8");
+  }
+  return true;
+}
+
+function run(bin, args, { capture = false } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, {
+      stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
+      shell: false,
+    });
+    let out = "";
+    if (capture) {
+      const tee = (chunk) => {
+        out += chunk;
+        process.stdout.write(chunk);
+      };
+      child.stdout.on("data", tee);
+      child.stderr.on("data", tee);
+    }
+    child.on("error", (err) => resolve({ code: null, out, error: err }));
+    child.on("exit", (code) => resolve({ code, out, error: null }));
+  });
+}
+
+async function resolveOne(name, options) {
+  const seen = new Map();
+  // A scoped npm name is what our own install commands print, so it is what
+  // people paste — and it is the one form the catalogue search missed until
+  // `npmPackage` was added to it. Older deployments are still out there and
+  // this CLI outlives them, so fall back to the bare name rather than telling
+  // someone a plugin does not exist while its page is open in their browser.
+  for (const query of [name, name.replace(/^@[^/]+\//, "")]) {
+    if (seen.has(query)) continue;
+    const data = await api(`/api/v1/plugins?q=${encodeURIComponent(query)}&limit=5`);
+    seen.set(query, true);
+    const hit =
+      data.results.find((r) => r.fullName === name || r.npmPackage === name) ??
+      (query === name ? data.results[0] : null);
+    if (hit) {
+      seen.set("hit", hit);
+      break;
+    }
+  }
+
+  const p = seen.get("hit");
+  if (!p) return { query: name, plugin: null };
 
   const option =
     options.source === "github"
       ? (p.installOptions.find((o) => o.label === "GitHub") ?? p.installOptions[0])
       : p.installOptions[0];
 
-  // The catalogue writes every command against the `web` profile, which is
-  // what a default DSH install creates. `dsh plugin` is a forward to pnpm
-  // inside a profile directory, so the flag is mandatory and the name has to
-  // be right — anyone on another profile overrides it here.
-  const profile = options.profile ?? "web";
-  const cmd = options.profile
-    ? option.cmd.replace(/--profile \S+/, `--profile ${options.profile}`)
-    : option.cmd;
+  // The target, not the whole command: several plugins go into one
+  // `dsh plugin add a b c`, which the harness accepts and which installs and
+  // registers all of them in a single pnpm resolution.
+  const target = option?.cmd?.match(/ add (\S+)$/)?.[1] ?? null;
+  return { query: name, plugin: p, target };
+}
 
-  // An agent driving this must be able to see what will run, and what the
-  // plugin declares, without parsing decorated console output. `resolved.cmd`
-  // is the exact string that would be executed, profile override included.
+async function add(names, options) {
+  if (!names.length) {
+    console.error("Usage: npx dshmarketplace-cli add <owner/repo> [more...]");
+    process.exit(1);
+  }
+
+  const resolved = await Promise.all(names.map((n) => resolveOne(n, options)));
+
+  const missing = resolved.filter((r) => !r.plugin);
+  const unusable = resolved.filter((r) => r.plugin && !r.target);
+  // A verdict is only worth acting on when it says the command cannot work.
+  // `needs-approval` and `not-a-layer` both installed; they are not blockers.
+  const broken = options.force
+    ? []
+    : resolved.filter(
+        (r) => r.target && ["failed", "timeout"].includes(r.plugin.installCheck),
+      );
+  const usable = resolved.filter(
+    (r) => r.target && !broken.includes(r),
+  );
+
+  const { profile, note } = resolveProfile(options.profile);
+  const profileDir = join(dshHome(), "profiles", profile);
+  const targets = usable.map((r) => r.target);
+  const cmd = targets.length
+    ? `dsh plugin --profile ${profile} add ${targets.join(" ")}`
+    : null;
+
   if (options.json && options.dryRun) {
     return emitJson("add", {
-      plugin: p,
-      resolved: { ...option, cmd },
       profile,
+      resolved: { cmd, targets },
+      plugins: usable.map((r) => r.plugin),
+      skipped: {
+        notFound: missing.map((r) => r.query),
+        noInstallCommand: unusable.map((r) => r.plugin.fullName),
+        failedInSandbox: broken.map((r) => r.plugin.fullName),
+      },
       executed: false,
-      riskFlags: p.riskFlags,
     });
   }
 
-  if (p.fullName !== name) {
-    console.log(c.dim(`No exact match for ${name} — using ${p.fullName}`));
-  }
-
-  console.log(`\n${c.bold(p.fullName)}`);
-  if (p.summary) console.log(c.dim(truncate(p.summary, 100)));
-
-  if (p.riskFlags?.length) {
+  for (const r of missing) console.log(c.red(`✗ not in the catalogue: ${r.query}`));
+  for (const r of unusable) {
     console.log(
-      `\n${c.copper("⚠")}  This plugin declares: ${p.riskFlags.join(", ")}.`,
+      c.red(`✗ ${r.plugin.fullName}`) +
+        c.dim(" — no install command exists for this listing"),
     );
+  }
+  for (const r of broken) {
     console.log(
-      c.dim(`   Listing is not a review. Source: ${p.repoUrl}`),
+      c.red(`✗ ${r.plugin.fullName}`) +
+        c.dim(` — sandbox says '${r.plugin.installCheck}'; skipping. --force to try anyway.`),
     );
   }
 
+  if (!usable.length) {
+    console.error(c.red("\nNothing left to install.\n"));
+    process.exit(1);
+  }
+
+  if (note) console.log(c.copper(`\n${note}`));
+
+  console.log();
+  for (const r of usable) {
+    const flags = r.plugin.riskFlags?.length
+      ? c.copper(`  ⚠ ${r.plugin.riskFlags.join(", ")}`)
+      : "";
+    console.log(`  ${c.bold(r.plugin.fullName)}${flags}`);
+  }
   console.log(`\n${c.copper("$")} ${cmd}\n`);
 
-  if (options.dryRun) {
-    console.log(c.dim("--dry-run: not executing."));
-    return;
-  }
+  if (options.dryRun) return console.log(c.dim("--dry-run: not executing."));
 
   const [bin, ...args] = cmd.split(" ");
-  const child = spawn(bin, args, { stdio: "inherit", shell: false });
+  const first = await run(bin, args, { capture: true });
 
-  child.on("error", (err) => {
-    if (err.code === "ENOENT") {
+  if (first.error) {
+    if (first.error.code === "ENOENT") {
       console.error(
         c.red(`\n'${bin}' is not on your PATH.`) +
           c.dim("\nInstall DeepSeek Harness first: npx @deepseek-ai/dsh web\n"),
       );
     } else {
-      console.error(c.red(`\n${err.message}\n`));
+      console.error(c.red(`\n${first.error.message}\n`));
     }
     process.exit(1);
-  });
+  }
 
-  child.on("exit", (code) => {
-    if (code === 0) console.log(c.green(`\n✓ ${p.fullName} installed\n`));
-    process.exit(code ?? 0);
-  });
+  // The install "succeeded" and a plugin may still be inert. Finishing the job
+  // is the point of running this through a tool instead of pasting a string.
+  const blocked = parseBlockedBuilds(first.out);
+  if (blocked.length) {
+    console.log(
+      c.copper(`\n⚠  pnpm refused to build: ${blocked.join(", ")}`) +
+        c.dim("\n   Until it is allowed, the harness may not register the plugin."),
+    );
+
+    if (options.noApprove) {
+      console.log(c.dim(`   Add these to onlyBuiltDependencies in ${profileDir}/pnpm-workspace.yaml`));
+    } else if (allowBuilds(profileDir, blocked)) {
+      console.log(c.dim(`   Allowed in ${profile}/pnpm-workspace.yaml — rebuilding.\n`));
+      await run("pnpm", ["install", "--dir", profileDir]);
+    } else {
+      console.log(
+        c.dim(`   Could not edit ${profileDir}/pnpm-workspace.yaml. Add by hand:\n`) +
+          c.dim(`   onlyBuiltDependencies:\n${blocked.map((b) => `     - ${b}`).join("\n")}\n`),
+      );
+    }
+  }
+
+  if (first.code === 0) {
+    console.log(c.green(`\n✓ ${plural(usable.length, "plugin", "plugins")} installed into '${profile}'\n`));
+  }
+  process.exit(first.code ?? 0);
 }
 
 const HELP = `
@@ -264,20 +438,31 @@ ${c.bold("dshmarketplace-cli")} ${c.dim(`v${VERSION}`)}  —  DeepSeek Harness p
 ${c.bold("Usage")}
   npx dshmarketplace-cli find <query>        Search the catalogue
   npx dshmarketplace-cli info <owner/repo>   Show one plugin in detail
-  npx dshmarketplace-cli add <owner/repo>    Install into DeepSeek Harness
+  npx dshmarketplace-cli add <name...>       Install one or more into DSH
 
 ${c.bold("Options")}
   --json             Machine-readable output (stable schema)
   --limit <n>        Results to show (find, default 10)
   --category <id>    Filter by category (find)
   --source github    Force the GitHub source over npm (add)
-  --profile <name>   DSH profile to install into (add, default: web)
+  --profile <name>   DSH profile to install into (add, default: detected)
+  --no-approve       Do not allowlist blocked build scripts; just report them
+  --force            Install even when the sandbox says the command fails
   --dry-run          Resolve without running the install (add)
 
 ${c.bold("Examples")}
   npx dshmarketplace-cli find memory
   npx dshmarketplace-cli find vision --limit 5
   npx dshmarketplace-cli add Anionex/dsh-vision-toolkit
+
+${c.bold("Installing several at once")}
+  npx dshmarketplace-cli add dsh-context dsh-mnemon @liustack/modsearch
+
+  They go into one \`dsh plugin add\`, so pnpm resolves them together. Anything
+  the sandbox has recorded as failing is dropped before your machine is
+  touched, and if pnpm refuses to run a build script the CLI allowlists it in
+  the profile and rebuilds — which is the step that otherwise leaves a plugin
+  installed but inert.
 
 ${c.bold("For coding agents")}
   Every command accepts --json and emits { ok, command, version, ... }.
@@ -302,6 +487,8 @@ function parseArgs(argv) {
     else if (arg === "--source") options.source = argv[++i];
     else if (arg === "--profile") options.profile = argv[++i];
     else if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--no-approve") options.noApprove = true;
+    else if (arg === "--force") options.force = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--yes" || arg === "-y") options.yes = true;
     else if (arg === "-h" || arg === "--help") options.help = true;
@@ -332,7 +519,7 @@ async function main() {
       return info(rest[0], options);
     case "add":
     case "install":
-      return add(rest[0], options);
+      return add(rest, options);
     default:
       console.error(`Unknown command: ${command}`);
       console.log(HELP);
